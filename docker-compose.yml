@@ -1,0 +1,170 @@
+---
+version: '2'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - springboot-kafka-prototype
+
+  broker:
+    image: confluentinc/cp-kafka:7.3.0
+    hostname: broker
+    container_name: broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_OPTS: -javaagent:/usr/share/jmx_exporter/jmx_prometheus_javaagent-0.12.0.jar=1234:/usr/share/jmx_exporter/kafka-broker.yml
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    volumes:
+      - ./jmx-exporter:/usr/share/jmx_exporter/
+    networks:
+      - springboot-kafka-prototype
+
+  prometheus:
+    image: prom/prometheus:v2.11.1
+    ports:
+      - 9090:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/:/etc/prometheus/
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - springboot-kafka-prototype
+
+  alertmanager:
+    image: prom/alertmanager:v0.18.0
+    ports:
+      - 9093:9093
+    networks:
+      - springboot-kafka-prototype
+
+  grafana:
+    image: grafana/grafana:7.0.6
+    environment:
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    ports:
+      - 3000:3000
+    volumes:
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+    networks:
+      - springboot-kafka-prototype
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.3.0
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - broker
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - springboot-kafka-prototype
+
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - 8070:8080
+    depends_on:
+      - broker
+      - schema-registry
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    networks:
+      - springboot-kafka-prototype
+
+  kafka-init-topics:
+    image: confluentinc/cp-kafka:7.3.0
+    volumes:
+      - ./message.json:/data/message.json
+    depends_on:
+      - broker
+    command: "bash -c 'echo Waiting for Kafka to be ready... && \
+                 cub kafka-ready -b broker:29092 1 30 && \
+                 kafka-topics --create --topic users --partitions 3 --replication-factor 1 --if-not-exists --bootstrap-server broker:29092 && \
+                 kafka-topics --create --topic messages --partitions 2 --replication-factor 1 --if-not-exists --bootstrap-server broker:29092 && \
+                 kafka-console-producer --bootstrap-server broker:29092 -topic users < /data/message.json'"
+    networks:
+      - springboot-kafka-prototype
+
+  postgresqldb:
+    container_name: postgresql-container
+    image: postgres:14.6
+    restart: always
+    environment:
+      POSTGRES_USER: amway_user
+      POSTGRES_PASSWORD: amway_password
+      POSTGRES_DB: amway_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - springboot-kafka-prototype
+
+  kafka-producer:
+    container_name: kafka-producer
+    build:
+      context: kafka-order-producer
+      dockerfile: Dockerfile
+    image: kafka-producer:latest
+    restart: always
+    ports:
+      - 8082:8082
+    depends_on:
+      - broker
+      - postgresqldb
+    networks:
+      - springboot-kafka-prototype
+
+  kafka-consumer:
+    container_name: kafka-consumer
+    build:
+      context: kafka-order-consumer
+      dockerfile: Dockerfile
+    image: kafka-consumer:latest
+    restart: always
+    ports:
+      - 8084:8084
+    depends_on:
+      - broker
+      - postgresqldb
+    networks:
+      - springboot-kafka-prototype
+
+networks:
+  springboot-kafka-prototype:
+    driver: bridge

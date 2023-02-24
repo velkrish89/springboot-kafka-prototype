@@ -1,0 +1,17 @@
+---
+version: '2'
+services:
+  kafka-producer:
+    container_name: kafka-producer
+    build:
+      context: kafka-order-producer
+      dockerfile: Dockerfile
+    image: kafka-producer:latest
+    restart: always
+    ports:
+      - 8082:8082
+    networks:
+      - springboot-kafka-prototype
+networks:
+  springboot-kafka-prototype:
+    external: true
